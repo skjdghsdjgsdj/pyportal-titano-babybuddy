@@ -2,6 +2,7 @@ import os
 import time
 
 import adafruit_datetime
+import analogio
 import rtc
 
 # noinspection PyBroadException
@@ -123,7 +124,7 @@ class BabyBuddy:
         timers = self.get("timers/")
 
         for timer in timers["results"]:
-            if timer["name"] is not None and "test" in timer["name"]:
+            if timer["name"] is not None and "feeding" in timer["name"].lower():
                 return adafruit_datetime.datetime.fromisoformat(timer["start"])
 
         return None
@@ -260,7 +261,7 @@ class UI:
         now = UI.now()
         elapsed = now - timer
 
-        self.main_label.text = f"{elapsed.seconds // 60}m {int(elapsed.seconds % 60)}s"
+        self.main_label.text = f"{elapsed.seconds / 60}m"
 
         hour = timer.hour
         meridian = "AM"
@@ -268,6 +269,8 @@ class UI:
             meridian = "PM"
             if hour > 12:
                 hour -= 12
+        elif hour == 0:
+            hour = 12
 
         self.sub_label.text = f"Started {hour}:{timer.minute:>02} {meridian}"
 
@@ -297,11 +300,25 @@ bb = BabyBuddy(wifi, os.getenv("BABYBUDDY_URL"), os.getenv("BABYBUDDY_API_KEY"))
 ui = UI(board.DISPLAY, bb)
 
 UPDATE_INTERVAL_SECONDS: Final = 30
+DIM_BACKLIGHT_THRESHOLD = 1000
+
+light_sensor = analogio.AnalogIn(board.LIGHT)
 
 tick = -1
+light_samples = []
 while True:
     tick += 1
     if tick % UPDATE_INTERVAL_SECONDS == 0:
         ui.update()
         tick = 0
+
+    light_samples.append(light_sensor.value)
+    while len(light_samples) > 10:
+        light_samples.pop(0)
+
+    if all(value < DIM_BACKLIGHT_THRESHOLD for value in light_samples):
+        board.DISPLAY.brightness = 0.01
+    else:
+        board.DISPLAY.brightness = 1
+
     time.sleep(1)
