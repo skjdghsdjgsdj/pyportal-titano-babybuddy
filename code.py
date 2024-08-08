@@ -1,124 +1,307 @@
 import os
 import time
 
+import adafruit_datetime
+import rtc
+
+# noinspection PyBroadException
+try:
+    from typing import Any, Optional, Callable, Final
+except:
+    pass
+
 import adafruit_connection_manager
 import adafruit_imageload
+import adafruit_ntp
 import board
 import busio
 import displayio
-import supervisor
 import adafruit_requests
 from adafruit_esp32spi import adafruit_esp32spi
 from digitalio import DigitalInOut
-from adafruit_display_text import label
+from adafruit_display_text.label import Label
 from adafruit_bitmap_font import bitmap_font
-from adafruit_display_shapes.line import Line
-import analogio
+from displayio import Display
+import supervisor
 
-#supervisor.runtime.autoreload = False
+supervisor.runtime.autoreload = False
 
-def connect_to_wifi():
-    esp32_cs = DigitalInOut(board.ESP_CS)
-    esp32_ready = DigitalInOut(board.ESP_BUSY)
-    esp32_reset = DigitalInOut(board.ESP_RESET)
+class Wifi:
+    def __init__(self):
+        self.requests = None
+        self.socketpool = None
 
-    spi = busio.SPI(board.SCK, board.MOSI, board.MISO)
-    esp = adafruit_esp32spi.ESP_SPIcontrol(spi, esp32_cs, esp32_ready, esp32_reset)
+    def connect(self) -> None:
+        esp32_cs = DigitalInOut(board.ESP_CS)
+        esp32_ready = DigitalInOut(board.ESP_BUSY)
+        esp32_reset = DigitalInOut(board.ESP_RESET)
 
-    if esp.status == adafruit_esp32spi.WL_IDLE_STATUS:
-        print("ESP32 found and in idle mode")
-    print("Firmware vers.", esp.firmware_version)
-    print("MAC addr:", ":".join("%02X" % byte for byte in esp.MAC_address))
+        spi = busio.SPI(board.SCK, board.MOSI, board.MISO)
+        esp = adafruit_esp32spi.ESP_SPIcontrol(spi, esp32_cs, esp32_ready, esp32_reset)
 
-    # noinspection PyTypeChecker
-    requests = adafruit_requests.Session(
-        adafruit_connection_manager.get_radio_socketpool(esp),
-        adafruit_connection_manager.get_radio_ssl_context(esp)
-    )
+        self.socketpool = adafruit_connection_manager.get_radio_socketpool(esp)
+        self.requests = adafruit_requests.Session(
+            self.socketpool,
+            adafruit_connection_manager.get_radio_ssl_context(esp)
+        )
 
-    esp.connect_AP(os.getenv("CIRCUITPY_WIFI_SSID"), os.getenv("CIRCUITPY_WIFI_PASSWORD"))
+        if esp.status == adafruit_esp32spi.WL_IDLE_STATUS:
+            print("ESP32 found and in idle mode")
+        print("Firmware version: " + esp.firmware_version)
+        print("MAC address: " + ":".join("%02X" % byte for byte in esp.MAC_address))
 
-    print("Connected to", esp.ap_info.ssid, "\tRSSI:", esp.ap_info.rssi)
-    print("IP address: ", esp.ipv4_address)
+        ssid = os.getenv("CIRCUITPY_WIFI_SSID")
+        print(f"Connecting to {ssid}...")
+        while not esp.connected:
+            try:
+                esp.connect_AP(ssid, os.getenv("CIRCUITPY_WIFI_PASSWORD"))
+                break
+            except OSError as e:
+                print(f"Got {e} while connecting, retrying")
 
-#connect_to_wifi()
+        print(f"Connected to {esp.ap_info.ssid}, IP {esp.ipv4_address}")
 
-fonts = {
-    "main": bitmap_font.load_font("SF-Compact-Display-Medium-96.pcf"),
-    "last_breast": bitmap_font.load_font("SF-Compact-Display-Medium-40.pcf"),
-    "change": bitmap_font.load_font("SF-Compact-Display-Medium-40.pcf"),
-}
+    def sync_rtc(self):
+        print("Getting date/time from NTP...")
+        ntp = adafruit_ntp.NTP(self.socketpool)
+        now = ntp.datetime
+        rtc.RTC().datetime = now
+        print(f"Synced: {adafruit_datetime.datetime.now()}")
 
-display = board.DISPLAY
-group = displayio.Group()
+class BabyBuddy:
+    LEFT_BREAST = -1
+    RIGHT_BREAST = 1
+    BOTH_BREASTS = 0
 
-main_label = label.Label(fonts["main"], text = "1h 15m", color = 0xFF0000)
-main_label.anchor_point = (0.5, 0.0)
-main_label.anchored_position = (display.width // 2, 40)
-group.append(main_label)
+    def __init__(self, wifi: Wifi, url: str, api_key: str):
+        self.wifi = wifi
+        self.url = url
+        self.api_key = api_key
 
-last_breast_label = label.Label(fonts["last_breast"], text = "○●", color = 0xFF0000)
-last_breast_label.anchor_point = (0.5, 0.0)
-last_breast_label.anchored_position = (display.width // 2, 150)
-group.append(last_breast_label)
+    def get_last_feeding(self) -> tuple[Optional[adafruit_datetime.datetime], Optional[int]]:
+        feedings = self.get("feedings/?limit=1")
 
-poop_bitmap, poop_palette = adafruit_imageload.load(
-    "/poop.bmp",
-    bitmap = displayio.Bitmap,
-    palette = displayio.Palette)
+        if len(feedings["results"]) == 0:
+            return None, None
 
-poop = displayio.TileGrid(
-    poop_bitmap,
-    pixel_shader = poop_palette,
-    x = display.width // 2 - 64 - 20,
-    y = display.height - 64 - 5
-)
+        feeding = feedings["results"][0]
+        if feeding["method"] == "left breast":
+            which_breast = BabyBuddy.LEFT_BREAST
+        elif feeding["method"] == "right breast":
+            which_breast = BabyBuddy.RIGHT_BREAST
+        elif feeding["method"] == "both breasts":
+            which_breast = BabyBuddy.BOTH_BREASTS
+        else:
+            which_breast = None
 
-group.append(poop)
+        last_feeding_datetime = adafruit_datetime.datetime.fromisoformat(feeding["start"])
 
-poop_label = label.Label(fonts["change"], text = "10h", color = 0x883300)
-poop_label.anchor_point = (1.0, 0.5)
-poop_label.anchored_position = (display.width // 2 - 64 - 20 - 10, display.height - 64 / 2 - 5)
-group.append(poop_label)
+        return last_feeding_datetime, which_breast
 
-pee_label = label.Label(fonts["change"], text = "47m", color = 0x0066FF)
-pee_label.anchor_point = (0.0, 0.5)
-pee_label.anchored_position = (display.width // 2 + 40 + 20 + 10, display.height - 64 / 2 - 5)
-group.append(pee_label)
+    def get_last_changes(self) -> tuple[Optional[adafruit_datetime.datetime], Optional[adafruit_datetime.datetime]]:
+        changes = self.get("changes/?limit=25")
 
-pee_bitmap, pee_palette = adafruit_imageload.load(
-    "/pee.bmp",
-    bitmap = displayio.Bitmap,
-    palette = displayio.Palette)
+        if len(changes["results"]) == 0:
+            return None, None
 
-pee = displayio.TileGrid(
-    pee_bitmap,
-    pixel_shader = poop_palette,
-    x = display.width // 2 + 20,
-    y = display.height - 64 - 5
-)
+        last_pee = None
+        last_poop = None
 
-group.append(pee)
+        for change in changes["results"]:
+            if change["wet"] and last_pee is None:
+                last_pee = adafruit_datetime.datetime.fromisoformat(change["time"])
 
-display.root_group = group
+            if change["solid"] and last_poop is None:
+                last_poop = adafruit_datetime.datetime.fromisoformat(change["time"])
 
-light_sensor = analogio.AnalogIn(board.LIGHT)
+            if last_pee is not None and last_poop is not None:
+                break
 
-MIN_LIGHT_VALUE = 800
-MAX_LIGHT_VALUE = 1500
+        return last_pee, last_poop
 
+    def get_feeding_timer(self) -> Optional[adafruit_datetime.datetime]:
+        timers = self.get("timers/")
+
+        for timer in timers["results"]:
+            if timer["name"] is not None and "test" in timer["name"]:
+                return adafruit_datetime.datetime.fromisoformat(timer["start"])
+
+        return None
+
+    def get(self, uri: str):
+        full_url = self.url + uri
+        print(f"GET {full_url}...", end = "")
+        response = self.wifi.requests.get(full_url, headers = {"Authorization": f"Token {self.api_key}"}, timeout = 5)
+        if response.status_code < 200 or response.status_code >= 300:
+            raise ValueError(f"Got HTTP {response.status_code} instead of expected 2xx")
+        print(response.status_code)
+        json = response.json()
+        response.close()
+        return json
+
+class UI:
+    fonts = {
+        "main": bitmap_font.load_font("SF-Compact-Display-Medium-96.pcf"),
+        "last_breast": bitmap_font.load_font("SF-Compact-Display-Medium-40.pcf"),
+        "change": bitmap_font.load_font("SF-Compact-Display-Medium-40.pcf"),
+    }
+
+    def __init__(self, display: Display, bb: BabyBuddy):
+        self.display = display
+        self.root = displayio.Group()
+        self.bb = bb
+        display.root_group = self.root
+
+        self.main_label = self.append_label(
+            font_name = "main",
+            text = "...",
+            color = 0xFF0000,
+            anchor_point = (0.5, 0.0),
+            anchored_position = (display.width // 2, 35)
+        )
+
+        self.sub_label = self.append_label(
+            font_name = "last_breast",
+            text = "",
+            color = 0xFF0000,
+            anchor_point = (0.5, 0.0),
+            anchored_position = (display.width // 2, 150)
+        )
+
+        self.append_bitmap("/poop.bmp", (display.width // 2 - 64, display.height - 64 - 5))
+        self.append_bitmap("/pee.bmp", (display.width // 2 + 20, display.height - 64 - 5))
+
+        self.poop_label = self.append_label(
+            font_name = "change",
+            text = "",
+            color = 0x883300,
+            anchor_point = (1.0, 0.5),
+            anchored_position = (display.width // 2 - 64 - 20, display.height - 64 // 2 - 5)
+        )
+
+        self.pee_label = self.append_label(
+            font_name = "change",
+            text = "",
+            color = 0x0066FF,
+            anchor_point = (0.0, 0.5),
+            anchored_position = (display.width // 2 + 40 + 20 + 10, display.height - 64 // 2 - 5)
+        )
+
+    def append_label(self,
+        font_name: str,
+        text: str,
+        color: int,
+        anchor_point: tuple[float, float],
+        anchored_position: tuple[int, int]
+    ):
+        label = Label(font = UI.fonts[font_name], text = text, color = color)
+        label.anchor_point = anchor_point
+        label.anchored_position = anchored_position
+
+        self.root.append(label)
+        return label
+
+    def append_bitmap(self, filename: str, coords: tuple[int, int]):
+        bitmap, palette = adafruit_imageload.load(
+            file_or_filename = filename,
+            bitmap = displayio.Bitmap,
+            palette = displayio.Palette
+        )
+
+        x, y = coords
+        tile_grid = displayio.TileGrid(bitmap = bitmap, pixel_shader = palette, x = x, y = y)
+
+        self.root.append(tile_grid)
+        return tile_grid
+
+    @staticmethod
+    def now():
+        return adafruit_datetime.datetime.now().replace(tzinfo = adafruit_datetime.timezone.utc)
+
+    def update(self):
+        feeding_timer = self.bb.get_feeding_timer()
+        if feeding_timer is None:
+            self.update_last_feeding()
+        else:
+            self.update_feeding_timer(feeding_timer)
+        self.update_last_changes()
+
+    def update_last_feeding(self):
+        last_feeding_datetime, which_breast = self.bb.get_last_feeding()
+
+        breast_text = ""
+
+        self.main_label.color = 0xFF0000
+        self.sub_label.color = 0xFF0000
+
+        if last_feeding_datetime is None:
+            self.main_label.text = "No data"
+        else:
+            now = UI.now()
+            then = last_feeding_datetime
+            time_ago = now - then
+
+            if which_breast is not None:
+                if which_breast == BabyBuddy.RIGHT_BREAST:
+                    breast_text = "○●"
+                elif which_breast == BabyBuddy.LEFT_BREAST:
+                    breast_text = "●○"
+                elif which_breast == BabyBuddy.BOTH_BREASTS:
+                    breast_text = "●●"
+
+            self.main_label.text = f"{time_ago.seconds // 60 // 60}h {time_ago.seconds // 60 % 60}m"
+
+        self.sub_label.text = breast_text
+
+    def update_feeding_timer(self, timer: adafruit_datetime.datetime):
+        self.main_label.color = 0xFFFFFF
+        self.sub_label.color = 0xFFFFFF
+
+        now = UI.now()
+        elapsed = now - timer
+
+        self.main_label.text = f"{elapsed.seconds // 60}m {int(elapsed.seconds % 60)}s"
+
+        hour = timer.hour
+        meridian = "AM"
+        if hour >= 12:
+            meridian = "PM"
+            if hour > 12:
+                hour -= 12
+
+        self.sub_label.text = f"Started {hour}:{timer.minute:>02} {meridian}"
+
+    @staticmethod
+    def datetime_to_change_label(datetime: Optional[adafruit_datetime.datetime], label: Label):
+        if datetime is None:
+            label.text = "?"
+        else:
+            now = UI.now()
+            delta = now - datetime
+            if delta.seconds < 60 * 60:
+                label.text = f"{delta.seconds // 60}m"
+            else:
+                label.text = f"{delta.seconds // 60 // 60}h"
+
+    def update_last_changes(self):
+        last_peed, last_pooped = self.bb.get_last_changes()
+
+        UI.datetime_to_change_label(last_peed, self.pee_label)
+        UI.datetime_to_change_label(last_pooped, self.poop_label)
+
+wifi = Wifi()
+wifi.connect()
+wifi.sync_rtc()
+
+bb = BabyBuddy(wifi, os.getenv("BABYBUDDY_URL"), os.getenv("BABYBUDDY_API_KEY"))
+ui = UI(board.DISPLAY, bb)
+
+UPDATE_INTERVAL_SECONDS: Final = 30
+
+tick = -1
 while True:
-    light_value = light_sensor.value
-    if light_value < MIN_LIGHT_VALUE:
-        backlight = 0
-    elif light_value > MAX_LIGHT_VALUE:
-        backlight = 1
-    else:
-        backlight = (light_value - MIN_LIGHT_VALUE) / (MAX_LIGHT_VALUE - MIN_LIGHT_VALUE)
-
-    if backlight <= 0.01:
-        backlight = 0.01
-
-    board.DISPLAY.brightness = backlight
-
-    time.sleep(0.1)
+    tick += 1
+    if tick % UPDATE_INTERVAL_SECONDS == 0:
+        ui.update()
+        tick = 0
+    time.sleep(1)
