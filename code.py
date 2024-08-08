@@ -261,7 +261,7 @@ class UI:
         now = UI.now()
         elapsed = now - timer
 
-        self.main_label.text = f"{elapsed.seconds / 60}m"
+        self.main_label.text = f"{elapsed.seconds // 60}m"
 
         hour = timer.hour
         meridian = "AM"
