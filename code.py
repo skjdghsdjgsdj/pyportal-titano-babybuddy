@@ -300,7 +300,7 @@ bb = BabyBuddy(wifi, os.getenv("BABYBUDDY_URL"), os.getenv("BABYBUDDY_API_KEY"))
 ui = UI(board.DISPLAY, bb)
 
 UPDATE_INTERVAL_SECONDS: Final = 30
-DIM_BACKLIGHT_THRESHOLD = 700
+DIM_BACKLIGHT_THRESHOLD = 600
 
 light_sensor = analogio.AnalogIn(board.LIGHT)
 
