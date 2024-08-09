@@ -142,7 +142,7 @@ class BabyBuddy:
 
 class UI:
     fonts = {
-        "main": bitmap_font.load_font("SF-Compact-Display-Medium-96.pcf"),
+        "main": bitmap_font.load_font("SF-Compact-Display-Medium-88.pcf"),
         "last_breast": bitmap_font.load_font("SF-Compact-Display-Medium-40.pcf"),
         "change": bitmap_font.load_font("SF-Compact-Display-Medium-40.pcf"),
     }
@@ -300,7 +300,7 @@ bb = BabyBuddy(wifi, os.getenv("BABYBUDDY_URL"), os.getenv("BABYBUDDY_API_KEY"))
 ui = UI(board.DISPLAY, bb)
 
 UPDATE_INTERVAL_SECONDS: Final = 30
-DIM_BACKLIGHT_THRESHOLD = 1000
+DIM_BACKLIGHT_THRESHOLD = 700
 
 light_sensor = analogio.AnalogIn(board.LIGHT)
 
@@ -317,7 +317,7 @@ while True:
         light_samples.pop(0)
 
     if all(value < DIM_BACKLIGHT_THRESHOLD for value in light_samples):
-        board.DISPLAY.brightness = 0.01
+        board.DISPLAY.brightness = 0.3
     else:
         board.DISPLAY.brightness = 1
 
