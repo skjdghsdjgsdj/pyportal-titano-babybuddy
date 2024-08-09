@@ -217,6 +217,7 @@ class UI:
 
     @staticmethod
     def now():
+        # noinspection PyUnresolvedReferences
         return adafruit_datetime.datetime.now().replace(tzinfo = adafruit_datetime.timezone.utc)
 
     def update(self):
@@ -226,6 +227,7 @@ class UI:
         else:
             self.update_feeding_timer(feeding_timer)
         self.update_last_changes()
+        self.display.refresh()
 
     def update_last_feeding(self):
         last_feeding_datetime, which_breast = self.bb.get_last_feeding()
@@ -250,6 +252,7 @@ class UI:
                 elif which_breast == BabyBuddy.BOTH_BREASTS:
                     breast_text = "●●"
 
+            # noinspection PyUnresolvedReferences
             self.main_label.text = f"{time_ago.seconds // 60 // 60}h {time_ago.seconds // 60 % 60}m"
 
         self.sub_label.text = breast_text
@@ -261,6 +264,7 @@ class UI:
         now = UI.now()
         elapsed = now - timer
 
+        # noinspection PyUnresolvedReferences
         self.main_label.text = f"{elapsed.seconds // 60}m"
 
         hour = timer.hour
@@ -281,9 +285,12 @@ class UI:
         else:
             now = UI.now()
             delta = now - datetime
+            # noinspection PyUnresolvedReferences
             if delta.seconds < 60 * 60:
+                # noinspection PyUnresolvedReferences
                 label.text = f"{delta.seconds // 60}m"
             else:
+                # noinspection PyUnresolvedReferences
                 label.text = f"{delta.seconds // 60 // 60}h"
 
     def update_last_changes(self):
@@ -294,23 +301,28 @@ class UI:
 
 wifi = Wifi()
 wifi.connect()
-wifi.sync_rtc()
 
 bb = BabyBuddy(wifi, os.getenv("BABYBUDDY_URL"), os.getenv("BABYBUDDY_API_KEY"))
 ui = UI(board.DISPLAY, bb)
 
 UPDATE_INTERVAL_SECONDS: Final = 30
 DIM_BACKLIGHT_THRESHOLD = 600
+NTP_RESYNC_INTERVAL_SECONDS = 60 * 60 * 4
 
 light_sensor = analogio.AnalogIn(board.LIGHT)
+
+board.DISPLAY.auto_refresh = False
 
 tick = -1
 light_samples = []
 while True:
     tick += 1
+    if tick % NTP_RESYNC_INTERVAL_SECONDS == 0:
+        wifi.sync_rtc()
+        tick = 0
+
     if tick % UPDATE_INTERVAL_SECONDS == 0:
         ui.update()
-        tick = 0
 
     light_samples.append(light_sensor.value)
     while len(light_samples) > 10:
