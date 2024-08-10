@@ -153,6 +153,8 @@ class UI:
         self.bb = bb
         display.root_group = self.root
 
+        self.display.auto_refresh = False
+
         self.main_label = self.append_label(
             font_name = "main",
             text = "...",
@@ -303,23 +305,22 @@ wifi = Wifi()
 wifi.connect()
 
 bb = BabyBuddy(wifi, os.getenv("BABYBUDDY_URL"), os.getenv("BABYBUDDY_API_KEY"))
+
 ui = UI(board.DISPLAY, bb)
 
 UPDATE_INTERVAL_SECONDS: Final = 30
 DIM_BACKLIGHT_THRESHOLD = 600
-NTP_RESYNC_INTERVAL_SECONDS = 60 * 60 * 4
+NTP_RESYNC_INTERVAL_SECONDS = 60 * 30
 
 light_sensor = analogio.AnalogIn(board.LIGHT)
-
-board.DISPLAY.auto_refresh = False
 
 tick = -1
 light_samples = []
 while True:
     tick += 1
+
     if tick % NTP_RESYNC_INTERVAL_SECONDS == 0:
         wifi.sync_rtc()
-        tick = 0
 
     if tick % UPDATE_INTERVAL_SECONDS == 0:
         ui.update()
