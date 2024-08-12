@@ -28,7 +28,7 @@ from watchdog import WatchDogMode
 
 supervisor.runtime.autoreload = False
 
-watchdog.timeout = 30
+watchdog.timeout = 15
 watchdog.mode = WatchDogMode.RESET
 watchdog.feed()
 
