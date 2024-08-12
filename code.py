@@ -3,7 +3,6 @@ import time
 
 import adafruit_datetime
 import analogio
-import rtc
 
 # noinspection PyBroadException
 try:
@@ -28,9 +27,11 @@ import supervisor
 supervisor.runtime.autoreload = False
 
 class Wifi:
-    def __init__(self):
+    def __init__(self, rtc_resync_interval_seconds: int):
         self.requests = None
         self.socketpool = None
+        self.rtc_resync_interval_seconds = rtc_resync_interval_seconds
+        self.ntp = None
 
     def connect(self) -> None:
         esp32_cs = DigitalInOut(board.ESP_CS)
@@ -62,20 +63,22 @@ class Wifi:
 
         print(f"Connected to {esp.ap_info.ssid}, IP {esp.ipv4_address}")
 
-    def sync_rtc(self):
-        print("Getting date/time from NTP...")
-        ntp = adafruit_ntp.NTP(self.socketpool)
-        now = ntp.datetime
-        rtc.RTC().datetime = now
-        print(f"Synced: {adafruit_datetime.datetime.now()}")
+    def now(self):
+        if self.ntp is None:
+            self.ntp = adafruit_ntp.NTP(
+                server = "pool.ntp.org",
+                socketpool = self.socketpool,
+                cache_seconds = self.rtc_resync_interval_seconds
+            )
+        return self.ntp.datetime
 
 class BabyBuddy:
     LEFT_BREAST = -1
     RIGHT_BREAST = 1
     BOTH_BREASTS = 0
 
-    def __init__(self, wifi: Wifi, url: str, api_key: str):
-        self.wifi = wifi
+    def __init__(self, wifi_device: Wifi, url: str, api_key: str):
+        self.wifi = wifi_device
         self.url = url
         self.api_key = api_key
 
@@ -147,10 +150,11 @@ class UI:
         "change": bitmap_font.load_font("SF-Compact-Display-Medium-40.pcf"),
     }
 
-    def __init__(self, display: Display, bb: BabyBuddy):
+    def __init__(self, display: Display, api: BabyBuddy, wifi_device: Wifi):
         self.display = display
         self.root = displayio.Group()
-        self.bb = bb
+        self.bb = api
+        self.wifi = wifi_device
         display.root_group = self.root
 
         self.display.auto_refresh = False
@@ -217,10 +221,17 @@ class UI:
         self.root.append(tile_grid)
         return tile_grid
 
-    @staticmethod
-    def now():
+    def now(self):
+        rtc_now = self.wifi.now()
         # noinspection PyUnresolvedReferences
-        return adafruit_datetime.datetime.now().replace(tzinfo = adafruit_datetime.timezone.utc)
+        return adafruit_datetime.datetime(
+            year = rtc_now.tm_year,
+            month = rtc_now.tm_mon,
+            day = rtc_now.tm_mday,
+            hour = rtc_now.tm_hour,
+            minute = rtc_now.tm_min,
+            second = rtc_now.tm_sec
+        ).replace(tzinfo = adafruit_datetime.timezone.utc)
 
     def update(self):
         feeding_timer = self.bb.get_feeding_timer()
@@ -242,7 +253,7 @@ class UI:
         if last_feeding_datetime is None:
             self.main_label.text = "No data"
         else:
-            now = UI.now()
+            now = self.now()
             then = last_feeding_datetime
             time_ago = now - then
 
@@ -263,7 +274,7 @@ class UI:
         self.main_label.color = 0xFFFFFF
         self.sub_label.color = 0xFFFFFF
 
-        now = UI.now()
+        now = self.now()
         elapsed = now - timer
 
         # noinspection PyUnresolvedReferences
@@ -280,12 +291,11 @@ class UI:
 
         self.sub_label.text = f"Started {hour}:{timer.minute:>02} {meridian}"
 
-    @staticmethod
-    def datetime_to_change_label(datetime: Optional[adafruit_datetime.datetime], label: Label):
+    def datetime_to_change_label(self, datetime: Optional[adafruit_datetime.datetime], label: Label):
         if datetime is None:
             label.text = "?"
         else:
-            now = UI.now()
+            now = self.now()
             delta = now - datetime
             # noinspection PyUnresolvedReferences
             if delta.seconds < 60 * 60:
@@ -298,19 +308,19 @@ class UI:
     def update_last_changes(self):
         last_peed, last_pooped = self.bb.get_last_changes()
 
-        UI.datetime_to_change_label(last_peed, self.pee_label)
-        UI.datetime_to_change_label(last_pooped, self.poop_label)
-
-wifi = Wifi()
-wifi.connect()
-
-bb = BabyBuddy(wifi, os.getenv("BABYBUDDY_URL"), os.getenv("BABYBUDDY_API_KEY"))
-
-ui = UI(board.DISPLAY, bb)
+        self.datetime_to_change_label(last_peed, self.pee_label)
+        self.datetime_to_change_label(last_pooped, self.poop_label)
 
 UPDATE_INTERVAL_SECONDS: Final = 30
 DIM_BACKLIGHT_THRESHOLD = 600
 NTP_RESYNC_INTERVAL_SECONDS = 60 * 30
+
+wifi = Wifi(rtc_resync_interval_seconds = NTP_RESYNC_INTERVAL_SECONDS)
+wifi.connect()
+
+bb = BabyBuddy(wifi, os.getenv("BABYBUDDY_URL"), os.getenv("BABYBUDDY_API_KEY"))
+
+ui = UI(board.DISPLAY, bb, wifi)
 
 light_sensor = analogio.AnalogIn(board.LIGHT)
 
@@ -318,9 +328,6 @@ tick = -1
 light_samples = []
 while True:
     tick += 1
-
-    if tick % NTP_RESYNC_INTERVAL_SECONDS == 0:
-        wifi.sync_rtc()
 
     if tick % UPDATE_INTERVAL_SECONDS == 0:
         ui.update()
