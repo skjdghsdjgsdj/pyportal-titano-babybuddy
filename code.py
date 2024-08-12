@@ -23,8 +23,14 @@ from adafruit_display_text.label import Label
 from adafruit_bitmap_font import bitmap_font
 from displayio import Display
 import supervisor
+from microcontroller import watchdog
+from watchdog import WatchDogMode
 
 supervisor.runtime.autoreload = False
+
+watchdog.timeout = 30
+watchdog.mode = WatchDogMode.RESET
+watchdog.feed()
 
 class Wifi:
     def __init__(self, rtc_resync_interval_seconds: int):
@@ -340,5 +346,7 @@ while True:
         board.DISPLAY.brightness = 0.3
     else:
         board.DISPLAY.brightness = 1
+
+    watchdog.feed()
 
     time.sleep(1)
